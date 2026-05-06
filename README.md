@@ -155,6 +155,10 @@ Fill in the fields as follows:
 
 Click **Configure**.
 
+<img width="630" height="536" alt="1_DremioUI" src="https://github.com/user-attachments/assets/52d009cf-911c-40fa-9f18-e73fa3646276" />
+<img width="867" height="425" alt="2_DremioUI" src="https://github.com/user-attachments/assets/7a9871b7-ee7e-48f4-b39e-ec110f564d68" />
+
+
 ### Field Matching Diagram
 
 ```
