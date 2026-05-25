@@ -261,7 +261,7 @@ def exchange_jwt_for_dremio_token(external_jwt):
     )
     resp.raise_for_status()
     token_data = resp.json()
-    print(f"✅ Dremio token obtained, expires in {token_data['expires_in']}s")
+    print(f"Dremio token obtained, expires in {token_data['expires_in']}s")
     return token_data["access_token"]
 
 
@@ -314,7 +314,7 @@ python dremio_connect.py
 
 Expected output:
 ```
-✅ Dremio token obtained, expires in 899s
+  Dremio token obtained, expires in 899s
   Job submitted: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 {
   "rowCount": 1,
