@@ -38,7 +38,7 @@ This guide documents how to configure a Dremio service user to authenticate usin
 pip install cryptography PyJWT requests
 ```
 
->  Do **not** install the `jwt` package — it conflicts with `PyJWT`. If already installed, remove it first:
+> ⚠️ Do **not** install the `jwt` package — it conflicts with `PyJWT`. If already installed, remove it first:
 > ```bash
 > pip uninstall jwt PyJWT -y && pip install PyJWT
 > ```
@@ -92,8 +92,8 @@ jwks = {
 with open("jwks.json", "w") as f:
     json.dump(jwks, f, indent=2)
 
-print(" private_key.pem — keep secret, never share")
-print(" jwks.json       — upload to S3")
+print("✅ private_key.pem — keep secret, never share")
+print("✅ jwks.json       — upload to S3")
 ```
 
 ```bash
@@ -112,6 +112,150 @@ aws s3 cp jwks.json s3://<your-bucket>/dremio-jwks/jwks.json --acl public-read
 
 > **Security note:** `jwks.json` contains only the RSA *public* key. It is safe to expose publicly — this is the same pattern used by Okta, Entra ID, and Google. Keep `private_key.pem` secret.
 
+### Alternative: Host JWKS Inside the Cluster via nginx (No Public URL Required)
+
+Use this option when:
+- Dremio runs on-prem or in an air-gapped environment with no public S3/GitHub access
+- You want to keep the JWKS URL entirely internal to the cluster
+- You are using Kubernetes service account tokens as the JWT source (`kubectl get --raw /openid/v1/jwks`)
+
+#### Architecture
+
+```
+Dremio coordinator pod
+        │
+        │  GET http://jwks-server.default.svc.cluster.local/jwks.json
+        ▼
+   nginx Service (ClusterIP)
+        │
+        ▼
+   nginx Pod
+        │
+        ▼
+   ConfigMap (contains jwks.json content)
+```
+
+#### Step A: Create the ConfigMap
+
+```bash
+# Using your existing jwks.json file
+kubectl create configmap jwks-config \
+  --from-file=jwks.json=./jwks.json \
+  -n default
+
+# For on-prem Kubernetes — extract JWKS directly from the cluster
+kubectl get --raw /openid/v1/jwks > jwks-cluster.json
+kubectl create configmap jwks-config \
+  --from-file=jwks.json=./jwks-cluster.json \
+  -n default
+
+# Verify
+kubectl describe configmap jwks-config -n default
+```
+
+#### Step B: Deploy nginx to Serve the JWKS
+
+```bash
+cat <<'EOF' > jwks-server.yaml
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jwks-server
+  namespace: default
+  labels:
+    app: jwks-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jwks-server
+  template:
+    metadata:
+      labels:
+        app: jwks-server
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            - name: jwks-volume
+              mountPath: /usr/share/nginx/html
+          livenessProbe:
+            httpGet:
+              path: /jwks.json
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: jwks-volume
+          configMap:
+            name: jwks-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jwks-server
+  namespace: default
+spec:
+  selector:
+    app: jwks-server
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+  type: ClusterIP
+EOF
+
+kubectl apply -f jwks-server.yaml
+
+# Verify pod is running
+kubectl get pods -n default | grep jwks
+kubectl get svc  -n default | grep jwks
+```
+
+#### Step C: Verify nginx is Serving the JWKS
+
+```bash
+# Test from inside the Dremio coordinator pod
+kubectl exec -it dremio-master-0 -n dremio-ns -- \
+  curl -v http://jwks-server.default.svc.cluster.local/jwks.json
+```
+
+Expected: HTTP 200 with the JWKS JSON body returned.
+
+#### Step D: Use the Internal URL in Dremio UI
+
+Set the **JWKS URL** field to:
+```
+http://jwks-server.default.svc.cluster.local/jwks.json
+```
+
+Everything else (Label, Audience, User claim, External ID, Issuer URL) remains the same.
+
+#### Updating jwks.json in Future
+
+If you ever regenerate your RSA keys, update the ConfigMap and restart nginx:
+
+```bash
+kubectl create configmap jwks-config \
+  --from-file=jwks.json=./jwks.json \
+  -n default \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl rollout restart deployment jwks-server -n default
+```
+
+#### JWKS Hosting Options Comparison
+
+| Option | JWKS URL | Best For |
+|--------|----------|----------|
+| **Public S3 bucket** | `https://<bucket>.s3.amazonaws.com/jwks.json` | AWS environments, quick testing |
+| **GitHub raw URL** | `https://raw.githubusercontent.com/<repo>/main/jwks.json` | Version controlled, no AWS needed |
+| **nginx in-cluster** | `http://jwks-server.default.svc.cluster.local/jwks.json` | On-prem, air-gapped, private clusters |
+
 ---
 
 ## Step 2: Verify JWKS is Reachable from Dremio Pods
@@ -119,8 +263,11 @@ aws s3 cp jwks.json s3://<your-bucket>/dremio-jwks/jwks.json --acl public-read
 Since Dremio runs on EKS, the coordinator pod must be able to fetch the JWKS URL at token exchange time.
 
 ```bash
+# Find the coordinator pod
+kubectl get pods -n <dremio-namespace> | grep coordinator
+
 # Test connectivity from inside the pod
-kubectl exec -it dremio-master-0 -n <dremio-namespace> -- \
+kubectl exec -it <coordinator-pod-name> -n <dremio-namespace> -- \
   curl -v https://<your-bucket>.s3.amazonaws.com/dremio-jwks/jwks.json
 ```
 
@@ -154,10 +301,6 @@ Fill in the fields as follows:
 | **JWKS URL** | `https://<your-bucket>.s3.amazonaws.com/dremio-jwks/jwks.json` | Where Dremio fetches the public key to verify signatures |
 
 Click **Configure**.
-
-<img width="630" height="536" alt="1_DremioUI" src="https://github.com/user-attachments/assets/52d009cf-911c-40fa-9f18-e73fa3646276" />
-<img width="867" height="425" alt="2_DremioUI" src="https://github.com/user-attachments/assets/7a9871b7-ee7e-48f4-b39e-ec110f564d68" />
-
 
 ### Field Matching Diagram
 
@@ -242,7 +385,7 @@ def exchange_jwt_for_dremio_token(external_jwt):
     )
     resp.raise_for_status()
     token_data = resp.json()
-    print(f"Dremio token obtained, expires in {token_data['expires_in']}s")
+    print(f"✅ Dremio token obtained, expires in {token_data['expires_in']}s")
     return token_data["access_token"]
 
 
@@ -302,7 +445,7 @@ python dremio_connect.py
 
 Expected output:
 ```
-  Dremio token obtained, expires in 899s
+✅ Dremio token obtained, expires in 899s
   Job submitted: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 {
   "rowCount": 1,
@@ -336,6 +479,8 @@ Expected output:
 | `401 Invalid token` | JWKS unreachable from pod | Run `kubectl exec` curl test from coordinator pod |
 | `403` on query | Service user missing role/privilege | Go to Granted Roles and assign appropriate permissions |
 | `AttributeError: module 'jwt' has no attribute 'encode'` | Wrong `jwt` package installed | `pip uninstall jwt PyJWT -y && pip install PyJWT` |
+| `0 ETPs were found for issuer X and audience Y` | JWKS URL empty or unreachable at credential registration time | Set JWKS URL explicitly in Dremio UI; verify reachability from coordinator pod; check coordinator startup logs for ETP registration failure |
+| `0 ETPs were found` on on-prem Kubernetes | `kubernetes.default.svc` JWKS endpoint uses self-signed cert not trusted by Dremio JVM | Use nginx in-cluster option to host JWKS at a reachable internal URL, or import the cluster CA cert into Dremio's JVM trust store |
 
 ---
 
