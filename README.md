@@ -152,11 +152,8 @@ https://raw.githubusercontent.com/<org>/<repo>/main/jwks.json
 ## Step A-2: Verify JWKS is Reachable from Dremio Pods
 
 ```bash
-# Find the coordinator pod
-kubectl get pods -n <dremio-namespace> | grep coordinator
-
 # Test connectivity from inside the pod
-kubectl exec -it <coordinator-pod-name> -n <dremio-namespace> -- \
+kubectl exec -it dremio-master-0  -n <dremio-namespace> -- \
   curl -v https://<your-bucket>.s3.amazonaws.com/dremio-jwks/jwks.json
 ```
 
@@ -446,7 +443,7 @@ kubectl get svc  -n default | grep jwks
 ## Step B-4: Verify JWKS is Reachable from Dremio Pods
 
 ```bash
-kubectl exec -it <dremio-coordinator-pod> -n <dremio-namespace> -- \
+kubectl exec -it dremio-master-0 -n <dremio-namespace> -- \
   curl -v http://jwks-server.default.svc.cluster.local/jwks.json
 ```
 
