@@ -96,8 +96,8 @@ jwks = {
 with open("jwks.json", "w") as f:
     json.dump(jwks, f, indent=2)
 
-print("✅ private_key.pem — keep secret, never share")
-print("✅ jwks.json       — upload to your chosen hosting location")
+print("private_key.pem — keep secret, never share")
+print("jwks.json       — upload to your chosen hosting location")
 ```
 
 ```bash
